@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}发现 · 轻旅{% endblock %}
+
+{% block content %}
+<div class="topbar">
+  <a class="back" href="/home">{{ icon('back', 20) }}</a>
+  <div class="search-box grow">
+    {{ icon('search', 17) }}
+    <input id="kw" type="text" placeholder="搜索景点 / 美食 / 城市，如「大熊猫」「西湖」" autocomplete="off">
+    <span class="clear" id="clearKw" style="display:none;">×</span>
+  </div>
+</div>
+
+<!-- 热门搜索 -->
+<div class="block-title mt12"><span class="h2">热门搜索</span></div>
+<div class="chips" id="hotChips">
+  <span class="chip" data-k="大熊猫繁育基地">大熊猫基地</span>
+  <span class="chip" data-k="西湖">西湖</span>
+  <span class="chip" data-k="故宫博物院">故宫</span>
+  <span class="chip" data-k="外滩">外滩</span>
+  <span class="chip" data-k="洪崖洞">洪崖洞</span>
+  <span class="chip" data-k="鼓浪屿">鼓浪屿</span>
+  <span class="chip" data-k="兵马俑">兵马俑</span>
+  <span class="chip" data-k="宽窄巷子">宽窄巷子</span>
+</div>
+
+<!-- 分类 chips -->
+<div class="block-title mt16"><span class="h2">分类</span></div>
+<div class="chips" id="catChips">
+  <span class="chip on" data-c="">全部</span>
+  <span class="chip" data-c="景点">景点</span>
+  <span class="chip" data-c="美食">美食</span>
+  <span class="chip" data-c="机位">机位</span>
+</div>
+
+<div id="result" class="mt16"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  let all = [], kw = '', cat = '';
+  let timer = null;
+
+  function thumbIcon(t) { return t === '美食' ? 'star' : (t === '机位' ? 'camera' : 'pin'); }
+  function thumbClass(t) { return t === '美食' ? 'qc-2' : (t === '机位' ? 'qc-3' : 'qc-0'); }
+
+  function card(a) {
+    return '<a class="card flex gap8" href="/attraction?id=' + a.id + '" style="display:flex;margin-top:10px;">' +
+      '<div class="img-ph ' + thumbClass(a.type) + '" style="width:64px;height:64px;border-radius:12px;flex-shrink:0;">' + icon(thumbIcon(a.type), 22) + '</div>' +
+      '<div class="grow" style="min-width:0;">' +
+        '<div class="flex-between"><span class="h2 ellipsis" style="font-size:15px;">' + esc(a.name) + '</span>' +
+        '<span class="num" style="color:var(--primary);flex-shrink:0;">' + fmtPrice(a.price) + '</span></div>' +
+        '<div class="caption dim" style="margin:3px 0;">' + esc(a.city) + ' · ' + esc(a.type || '') + (a.open_hours ? ' · ' + esc(a.open_hours) : '') + '</div>' +
+        '<div class="caption" style="color:var(--warning);">' + (a.rating != null ? '★ ' + a.rating + ' · ' + (a.review_count || 0) + ' 条评价' : '暂无评分') + '</div>' +
+      '</div>' +
+      '<span style="align-self:center;color:var(--text-3);">' + icon('chevR', 16) + '</span>' +
+    '</a>';
+  }
+
+  function render() {
+    const list = all.filter(a => !cat || a.type === cat);
+    const box = $('#result');
+    if (!list.length) {
+      box.innerHTML = '<div class="empty">' + icon('search', 50) + '<div class="t">未找到相关景点</div><div class="caption">换个关键词或分类试试</div></div>';
+      return;
+    }
+    box.innerHTML = list.map(card).join('');
+  }
+
+  async function fetchList() {
+    try {
+      const params = new URLSearchParams();
+      if (kw) params.set('keyword', kw);
+      if (cat) params.set('type', cat);
+      all = await api('/api/v1/attractions' + (params.toString() ? '?' + params.toString() : ''));
+      render();
+    } catch (e) { toast(e.message); }
+  }
+
+  // 关键词实时搜索（防抖）
+  $('#kw').addEventListener('input', () => {
+    kw = $('#kw').value.trim();
+    $('#clearKw').style.display = kw ? 'block' : 'none';
+    clearTimeout(timer);
+    timer = setTimeout(fetchList, 300);
+  });
+
+  $('#clearKw').onclick = () => { $('#kw').value = ''; kw = ''; $('#clearKw').style.display = 'none'; fetchList(); };
+
+  $('#hotChips').addEventListener('click', e => {
+    const c = e.target.closest('[data-k]'); if (!c) return;
+    $('#kw').value = c.dataset.k; kw = c.dataset.k;
+    $('#clearKw').style.display = 'block';
+    fetchList();
+  });
+
+  $('#catChips').addEventListener('click', e => {
+    const c = e.target.closest('[data-c]'); if (!c) return;
+    $$('#catChips .chip').forEach(x => x.classList.remove('on'));
+    c.classList.add('on'); cat = c.dataset.c; fetchList();
+  });
+
+  fetchList();
+})();
+</script>
+{% endblock %}

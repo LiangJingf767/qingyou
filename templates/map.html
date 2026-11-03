@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>高德地图接入演示</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #FBF9F4; }
+    .bar { display: flex; gap: 8px; padding: 12px 16px; background: #2F6B52; align-items: center; }
+    .bar input { flex: 1; padding: 8px 12px; border: 0; border-radius: 8px; font-size: 15px; }
+    .bar button { padding: 8px 16px; border: 0; border-radius: 8px; background: #fff; color: #2F6B52; font-size: 15px; cursor: pointer; }
+    #map { width: 100%; height: calc(100vh - 62px); }
+    .hint { padding: 6px 16px; color: #888; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <input id="city" value="成都" placeholder="输入城市，如：成都 / 北京 / 上海">
+    <button onclick="renderCity()">加载</button>
+  </div>
+  <div class="hint">地图标注该城市“必去景点”。若看不到标记，先运行 <code>python backfill_coords.py</code> 回填坐标。</div>
+  <div id="map"></div>
+
+  <script>
+    window.AMAP_CONFIG = {
+      key: "{{ config.AMAP_JS_KEY }}",
+      securityJsCode: "{{ config.AMAP_JS_SECURITY_CODE }}"
+    };
+  </script>
+  <script src="/static/js/amap-loader.js"></script>
+  <script>
+    var map = null;
+
+    function fetchJSON(url) { return fetch(url).then(function (r) { return r.json(); }); }
+
+    function renderCity() {
+      var city = document.getElementById('city').value.trim();
+      if (!city) return;
+
+      // 1) 城市名 → 中心点（后端地理编码，走 Web服务 Key）
+      fetchJSON('/api/v1/map/geocode?address=' + encodeURIComponent(city))
+        .then(function (res) {
+          if (res.code !== 0 || !res.data.length) { alert('城市定位失败：' + res.message); return; }
+          var g = res.data[0];
+
+          loadAMap(function (AMap) {
+            if (!map) {
+              map = new AMap.Map('map', { center: [g.lng, g.lat], zoom: 12 });
+            } else {
+              map.setCenter([g.lng, g.lat]);
+              map.clearMap();
+            }
+
+            // 2) 取目的地详情里的景点，逐个打点
+            fetchJSON('/api/v1/destinations/' + encodeURIComponent(city))
+              .then(function (res) {
+                if (res.code !== 0) { alert('取目的地失败：' + res.message); return; }
+                var spots = (res.data.attractions || []).filter(function (a) {
+                  return a.lat != null && a.lng != null;
+                });
+                if (!spots.length) { alert('该城市暂无坐标数据，请先运行 python backfill_coords.py'); }
+                spots.forEach(function (a) {
+                  var m = new AMap.Marker({ position: [a.lng, a.lat], title: a.name });
+                  m.setMap(map);
+                  m.on('click', function () {
+                    var price = a.price != null ? '¥' + a.price : '免费 / 待定';
+                    var info = new AMap.InfoWindow({
+                      content: '<b>' + a.name + '</b><br>' + price +
+                               '<br><small>' + (a.open_hours || '') + '</small>',
+                      offset: new AMap.Pixel(0, -30)
+                    });
+                    info.open(map, [a.lng, a.lat]);
+                  });
+                });
+              });
+          });
+        });
+    }
+
+    renderCity();  // 初始加载
+  </script>
+</body>
+</html>

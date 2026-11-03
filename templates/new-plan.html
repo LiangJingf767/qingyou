@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}新建行程 · 轻旅{% endblock %}
+
+{% block content %}
+<div class="topbar">
+  <a class="back" href="/home">{{ icon('back', 20) }}</a>
+  <div class="title">新建行程</div>
+  <div class="caption">5 步</div>
+</div>
+
+<div class="progress" style="margin-bottom:20px;"><i id="stepBar" style="width:20%;"></i></div>
+
+<!-- ① 目的地 -->
+<div class="field">
+  <label>① 目的地</label>
+  <input class="input" id="city" placeholder="输入城市名，如 成都" autocomplete="off">
+  <div class="chips mt8" id="cityChips"></div>
+</div>
+
+<!-- ② 日期 -->
+<div class="field">
+  <label>② 出发日期</label>
+  <input class="input" type="date" id="startDate">
+</div>
+
+<!-- ③ 天数 -->
+<div class="field">
+  <label>③ 天数</label>
+  <div class="stepper">
+    <button id="daysMinus">−</button>
+    <span class="val" id="daysVal">3</span>
+    <button id="daysPlus">+</button>
+  </div>
+</div>
+
+<!-- ④ 预算 -->
+<div class="field">
+  <label>④ 预算（元）</label>
+  <div class="flex-between">
+    <span class="num" style="font-size:22px;color:var(--primary);" id="budgetVal">1200</span>
+    <div class="chips">
+      <span class="chip small" data-tier="省钱">省钱</span>
+      <span class="chip small on" data-tier="标准">标准</span>
+      <span class="chip small" data-tier="舒适">舒适</span>
+    </div>
+  </div>
+  <input class="slider mt8" type="range" id="budget" min="200" max="5000" step="50" value="1200">
+  <div class="tier-marks"><span>200</span><span>5000</span></div>
+</div>
+
+<!-- ⑤ 偏好 / 人数 -->
+<div class="field">
+  <label>⑤ 兴趣偏好（可多选）</label>
+  <div class="chips" id="prefChips"></div>
+</div>
+<div class="field">
+  <label>出行人数（含自己）</label>
+  <div class="stepper">
+    <button id="peopleMinus">−</button>
+    <span class="val" id="peopleVal">1</span>
+    <button id="peoplePlus">+</button>
+  </div>
+  <div class="caption dim" style="margin-top:6px;">1 人即独行，预算按实际人数分摊</div>
+</div>
+
+<div class="main-cta">
+  <button class="btn btn-primary btn-block btn-lg" id="submit">下一步 · 录入行程笔记</button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  const CITIES = ['北京', '成都', '上海', '杭州', '西安', '重庆', '广州', '南京', '武汉', '长沙'];
+  const PREFS = ['美食', '拍照', '文化', '历史', '博物馆', '休闲', '打卡', '省钱'];
+  const TIER_PRESET = { '省钱': 600, '标准': 1200, '舒适': 2500 };
+  let days = 3, people = 1, pref = [];
+
+  $('#cityChips').innerHTML = CITIES.map(c => '<span class="chip small" data-c="' + c + '">' + c + '</span>').join('');
+  $('#prefChips').innerHTML = PREFS.map(p => '<span class="chip" data-p="' + p + '">' + p + '</span>').join('');
+
+  // 从详情页「以此目的地新建行程」带入城市
+  const preCity = qs('city');
+  if (preCity) $('#city').value = preCity;
+
+  function sync() {
+    $('#daysVal').textContent = days;
+    $('#peopleVal').textContent = people;
+    $('#budgetVal').textContent = $('#budget').value;
+    const filled = [!!$('#city').value.trim(), 1, 1, 1, pref.length ? 1 : 0].reduce((a, b) => a + b, 0);
+    $('#stepBar').style.width = (filled / 5 * 100) + '%';
+  }
+
+  $('#cityChips').addEventListener('click', e => {
+    const c = e.target.closest('[data-c]'); if (!c) return;
+    $('#city').value = c.dataset.c; sync();
+  });
+  $('#daysMinus').onclick = () => { days = Math.max(1, days - 1); sync(); };
+  $('#daysPlus').onclick = () => { days = Math.min(15, days + 1); sync(); };
+  $('#peopleMinus').onclick = () => { people = Math.max(1, people - 1); sync(); };
+  $('#peoplePlus').onclick = () => { people = Math.min(10, people + 1); sync(); };
+
+  $('#budget').addEventListener('input', sync);
+  $('#city').addEventListener('input', sync);
+
+  $$('#prefChips .chip').forEach(c => c.addEventListener('click', () => {
+    c.classList.toggle('on'); sync();
+  }));
+
+  $$('.chips [data-tier]').forEach(c => c.addEventListener('click', () => {
+    $$('.chips [data-tier]').forEach(x => x.classList.remove('on'));
+    c.classList.add('on');
+    $('#budget').value = TIER_PRESET[c.dataset.tier];
+    sync();
+  }));
+
+  $('#submit').onclick = async () => {
+    const city = $('#city').value.trim();
+    if (!city) { toast('请填写目的地城市'); return; }
+    const btn = $('#submit'); btn.disabled = true; btn.textContent = '创建中…';
+    try {
+      const p = await api('/api/v1/projects', {
+        method: 'POST',
+        body: {
+          city, days,
+          budget: Number($('#budget').value),
+          people,
+          start_date: $('#startDate').value || todayStr(),
+          preferences: $$('#prefChips .chip.on').map(c => c.dataset.p)
+        }
+      });
+      setCurPid(p.id);
+      toast('行程已创建，去录入笔记吧');
+      setTimeout(() => goto('/capture?project_id=' + p.id), 400);
+    } catch (e) {
+      toast(e.message); btn.disabled = false; btn.textContent = '下一步 · 录入行程笔记';
+    }
+  };
+
+  sync();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% block title %}录入笔记 · 轻旅{% endblock %}
+
+{% block content %}
+<div class="topbar">
+  <a class="back" href="/home">{{ icon('back', 20) }}</a>
+  <div class="title">录入行程笔记</div>
+  <div class="caption" id="cityLabel"></div>
+</div>
+
+<div class="tabs" style="margin-bottom:16px;">
+  <span class="tab on" data-tab="paste">粘贴</span>
+  <span class="tab" data-tab="ocr">截图 OCR</span>
+  <span class="tab" data-tab="manual">手动填表</span>
+</div>
+
+<!-- 粘贴 -->
+<div id="panel-paste">
+  <textarea class="input" id="noteText" placeholder="粘贴小红书/攻略原文，支持「第N天」「门票XX元」等描述，会自动拆分识别…" style="min-height:150px;"></textarea>
+  <div class="flex gap8 mt8">
+    <button class="btn btn-ghost" id="fillExample">填入示例</button>
+    <button class="btn btn-outline" id="split">智能拆分并识别</button>
+  </div>
+  <div class="caption dim mt8" style="line-height:1.6;">识别结果会按「已识别 / 待确认 / 低置信」分组预览，可逐条修正或跳过，再一键生成行程。</div>
+</div>
+
+<!-- OCR -->
+<div id="panel-ocr" class="hide">
+  <input type="file" id="ocrInput" accept="image/*" style="display:none;">
+  <div class="img-ph" style="height:200px;cursor:pointer;" id="ocrDrop">
+    {{ icon('camera', 34) }}
+    <div class="t">上传攻略截图，自动识别文字</div>
+    <div class="caption">识别后可直接拆分生成行程</div>
+  </div>
+  <button class="btn btn-primary btn-block mt16" id="ocrBtn">选择截图并识别</button>
+  <div id="ocrStatus" class="caption dim mt8" style="text-align:center;"></div>
+</div>
+
+<!-- 手动填表 -->
+<div id="panel-manual" class="hide">
+  <div class="img-ph" style="height:160px;">
+    {{ icon('edit', 30) }}
+    <div class="t">手动填写单个条目</div>
+    <div class="caption">名称 / 类型 / 门票 / 时间等，逐条录入</div>
+  </div>
+  <a class="btn btn-primary btn-block mt16" id="manualAdd">手动填表</a>
+</div>
+
+<!-- 识别结果预览 -->
+<div class="block hide" id="preview">
+  <div class="block-title"><span class="h2">识别结果</span><a class="btn-text" id="reRun">重新识别</a></div>
+  <div id="previewBody"></div>
+  <div class="main-cta">
+    <button class="btn btn-primary btn-block btn-lg" id="generate">下一步 · 生成行程</button>
+  </div>
+</div>
+
+<!-- 生成动画 -->
+<div id="genMask" class="sheet-mask show" style="z-index:70;display:none;background:rgba(251,249,244,.94);">
+  <div style="position:absolute;top:42%;left:50%;transform:translate(-50%,-50%);text-align:center;width:100%;">
+    <div class="gen-spin" style="margin:0 auto 18px;"></div>
+    <div class="h2" style="color:var(--primary);">正在生成行程…</div>
+    <div class="caption dim mt8">地理分天 · 路径排序 · 预算核算</div>
+  </div>
+</div>
+<style>
+  .gen-spin { width:56px; height:56px; border-radius:50%; border:4px solid var(--primary-soft); border-top-color: var(--primary); animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  const pid = qs('project_id');
+  if (!pid) { toast('缺少行程参数'); setTimeout(() => goto('/home'), 800); return; }
+  let items = [];
+
+  const EXAMPLE = 'Day1 大熊猫繁育研究基地，门票55元，7:30开门，游玩3小时，早上去看熊猫最活跃。\nDay1 宽窄巷子免费，全天开放，逛1.5小时。\nDay2 武侯祠门票50元，8:30开门；锦里古街免费，晚上亮灯好看。\nDay3 杜甫草堂门票50元，9点开园，游玩2小时。';
+
+  async function loadProject() {
+    try { const p = await api('/api/v1/projects/' + pid); $('#cityLabel').textContent = p.city; }
+    catch (e) { toast(e.message); }
+  }
+
+  $$('.tabs .tab').forEach(t => t.addEventListener('click', () => {
+    $$('.tabs .tab').forEach(x => x.classList.remove('on'));
+    t.classList.add('on');
+    ['paste', 'ocr', 'manual'].forEach(k => $('#panel-' + k).classList.toggle('hide', k !== t.dataset.tab));
+  }));
+
+  $('#fillExample').onclick = () => { $('#noteText').value = EXAMPLE; };
+
+  function group(it) {
+    if (!it.type) return '低置信';
+    if (!it.price_source || it.price_source === '待补充') return '待确认';
+    return '已识别';
+  }
+
+  async function runPipeline(text) {
+    if (text === undefined) text = $('#noteText').value.trim();
+    if (!text) { toast('请先粘贴笔记内容或上传截图'); return; }
+    let llmCfg = null;
+    try { llmCfg = JSON.parse(localStorage.getItem('llm:config') || 'null'); } catch (e) {}
+    const useAI = !!(llmCfg && llmCfg.api_key);
+    $('#split').disabled = true; $('#split').textContent = useAI ? '大模型提取中…' : '识别中…';
+    try {
+      await api('/api/v1/projects/' + pid + '/notes', { method: 'POST', body: { text, source: '小红书' } });
+      const res = await api('/api/v1/projects/' + pid + '/pipeline', { method: 'POST', body: useAI ? { llm: llmCfg } : {} });
+      items = res.items || [];
+      renderPreview();
+      $('#preview').classList.remove('hide');
+      $('#preview').scrollIntoView({ behavior: 'smooth' });
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      $('#split').disabled = false; $('#split').textContent = '智能拆分并识别';
+    }
+  }
+
+  function renderPreview() {
+    const groups = { '已识别': [], '待确认': [], '低置信': [] };
+    items.forEach(it => { const g = group(it); groups[g].push(it); });
+    const order = ['已识别', '待确认', '低置信'];
+    let html = '';
+    order.forEach(g => {
+      const list = groups[g];
+      if (!list.length) return;
+      html += '<div class="caption dim" style="margin:14px 0 8px;">' + g + ' · ' + list.length + ' 条</div>';
+      html += list.map(it =>
+        '<div class="it-card">' +
+          '<div class="img-ph thumb" style="width:44px;height:44px;">' + icon(it.type === '美食' ? 'star' : (it.type === '机位' ? 'camera' : 'pin'), 18) + '</div>' +
+          '<div class="grow" style="min-width:0;">' +
+            '<div class="h2 ellipsis" style="font-size:15px;">' + esc(it.name) + '</div>' +
+            '<div class="caption dim">' + esc(it.type || '类型待定') + ' · ' + fmtPrice(it.price) + (it.day ? ' · Day' + it.day : '') + '</div>' +
+            (it.note ? '<div class="caption" style="margin-top:3px;color:var(--text-2);">' + esc(it.note) + '</div>' : '') +
+          '</div>' +
+          '<a class="btn-text" href="/edit-item?project_id=' + pid + '&item_id=' + it.id + '">' + icon('edit', 16) + ' 修正</a>' +
+          '<a class="btn-text btn-danger" data-skip="' + it.id + '">跳过</a>' +
+        '</div>'
+      ).join('');
+    });
+    if (!items.length) html = '<div class="empty">' + icon('search', 50) + '<div class="t">没有识别到条目</div><div class="caption">换一段包含景点名/门票的文本试试</div></div>';
+    $('#previewBody').innerHTML = html;
+  }
+
+  $('#split').onclick = () => runPipeline();
+
+  // 截图 OCR：上传 → 识别 → 直接进管线
+  $('#ocrBtn').onclick = () => $('#ocrInput').click();
+  $('#ocrDrop').onclick = () => $('#ocrInput').click();
+  $('#ocrInput').onchange = async () => {
+    const f = $('#ocrInput').files[0]; if (!f) return;
+    const btn = $('#ocrBtn'); btn.disabled = true; btn.textContent = '识别中…';
+    $('#ocrStatus').textContent = '';
+    try {
+      const text = await ocrImage(f);
+      $('#ocrStatus').textContent = '已识别文字，正在拆分…';
+      await runPipeline(text);
+      $('#ocrStatus').textContent = '';
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      btn.disabled = false; btn.textContent = '选择截图并识别'; $('#ocrInput').value = '';
+    }
+  };
+
+  $('#previewBody').addEventListener('click', async e => {
+    const skip = e.target.closest('[data-skip]');
+    if (!skip) return;
+    const id = skip.dataset.skip;
+    try {
+      await api('/api/v1/items/' + id, { method: 'DELETE' });
+      items = items.filter(it => String(it.id) !== id);
+      renderPreview();
+      toast('已跳过');
+    } catch (err) { toast(err.message); }
+  });
+
+  $('#reRun').onclick = () => { $('#preview').classList.add('hide'); };
+
+  $('#generate').onclick = async () => {
+    const mask = $('#genMask'); mask.style.display = 'block';
+    let llmCfg = null;
+    try { llmCfg = JSON.parse(localStorage.getItem('llm:config') || 'null'); } catch (e) {}
+    const useAI = !!(llmCfg && llmCfg.api_key);
+    const cap = mask.querySelector('.caption');
+    if (cap) cap.textContent = useAI ? '大模型规划中 · 为你个性化安排' : '地理分天 · 路径排序 · 预算核算';
+    try {
+      await api('/api/v1/projects/' + pid + '/generate', { method: 'POST', body: useAI ? { llm: llmCfg } : {} });
+      setTimeout(() => goto('/itinerary?project_id=' + pid), 900);
+    } catch (e) {
+      mask.style.display = 'none'; toast(e.message);
+    }
+  };
+
+  $('#manualAdd').onclick = () => goto('/edit-item?project_id=' + pid);
+
+  loadProject();
+})();
+</script>
+{% endblock %}

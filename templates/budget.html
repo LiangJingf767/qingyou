@@ -1,0 +1,260 @@
+{% extends "base.html" %}
+{% block title %}账本 · 轻旅{% endblock %}
+
+{% block content %}
+<div class="topbar">
+  <a class="back" id="backBtn">{{ icon('back', 20) }}</a>
+  <div class="title">账本</div>
+  <div class="caption" id="cityLabel"></div>
+</div>
+
+<div id="emptyBox" class="hide"></div>
+
+<div class="chips" id="projChips" style="margin-bottom:12px;"></div>
+
+<!-- 顶部渐变卡 -->
+<div class="grad-card" id="summaryCard">
+  <div class="caption dim">已花金额</div>
+  <div class="flex-between" style="margin:4px 0 14px;">
+    <span class="num" id="spentTotal" style="font-size:32px;">¥0</span>
+    <span class="caption dim">预算 <span id="estTotal">¥0</span></span>
+  </div>
+  <div class="progress" style="background:rgba(255,255,255,.25);"><i id="spentBar" style="width:0%;background:#fff;"></i></div>
+  <div class="metrics" style="margin-top:16px;">
+    <div class="m"><div class="v" id="mPer">¥0</div><div class="k">人均</div></div>
+    <div class="m"><div class="v" id="mRemain">¥0</div><div class="k">剩余</div></div>
+    <div class="m"><div class="v" id="mDays">0</div><div class="k">覆盖天数</div></div>
+  </div>
+</div>
+
+<div class="tabs mt16">
+  <span class="tab on" data-tab="budget">行程预算</span>
+  <span class="tab" data-tab="bills">我的账单</span>
+</div>
+
+<!-- 行程预算 -->
+<div id="panel-budget" class="mt16">
+  <div class="section" id="catList"></div>
+  <div class="block-title mt16"><span class="h2">砍单建议</span></div>
+  <div id="adviceList"></div>
+</div>
+
+<!-- 我的账单 -->
+<div id="panel-bills" class="mt16 hide">
+  <div class="flex-between" style="margin-bottom:8px;">
+    <div class="caption dim">按日期分组</div>
+    <button class="btn btn-primary" id="addExpense" style="padding:8px 16px;">{{ icon('plus', 16) }} 记一笔</button>
+  </div>
+  <div id="overWarn"></div>
+  <div id="billList"></div>
+</div>
+{% endblock %}
+
+{% block nav %}<nav class="navbar" id="navbar"></nav>{% endblock %}
+
+{% block sheet %}
+<div class="sheet" id="sheet">
+  <div class="sheet-handle"></div>
+  <div class="h2" style="margin-bottom:16px;">记一笔</div>
+  <div class="amount-input">
+    <span class="yen">¥</span>
+    <input id="expAmount" type="number" inputmode="decimal" placeholder="0.00" min="0">
+  </div>
+  <div class="caption dim mt8">分类</div>
+  <div class="chips mt8" id="expCats"></div>
+  <div class="field mt16">
+    <label>关联行程（可选）</label>
+    <select class="input" id="expItem"><option value="">不关联</option></select>
+  </div>
+  <div class="field">
+    <label>备注</label>
+    <input class="input" id="expNote" placeholder="如 知味观午餐">
+  </div>
+  <button class="btn btn-primary btn-block btn-lg" id="expSave">保存</button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  const CATS = ['餐饮', '交通', '门票', '住宿', '购物', '其他'];
+  const DISPLAY_ORDER = ['交通', '住宿', '餐饮', '门票', '购物', '其他'];
+  let pid = qs('project_id'), projects = [];
+  let summary = null, expenses = [], items = [], tradeoffs = [], selCat = '餐饮';
+
+  function catIcon(c) { return c === '交通' ? 'map' : (c === '住宿' ? 'home' : (c === '餐饮' ? 'star' : (c === '门票' ? 'doc' : 'wallet'))); }
+
+  function renderProjChips() {
+    const sorted = [...projects].sort((a, b) => b.id - a.id);
+    $('#projChips').innerHTML = sorted.map(p =>
+      '<span class="chip ' + (String(p.id) === String(pid) ? 'on' : '') + '" data-pid="' + p.id + '">' + esc(p.city) + '</span>'
+    ).join('');
+  }
+
+  async function load() {
+    try {
+      projects = await api('/api/v1/projects');
+      if (!projects.length) {
+        $('#summaryCard').classList.add('hide');
+        $('#projChips').classList.add('hide');
+        $('#emptyBox').className = 'empty';
+        $('#emptyBox').innerHTML = icon('wallet', 50) + '<div class="t">还没有行程</div><div class="caption">先新建一个行程，再开始记账</div>' +
+          '<a class="btn btn-primary" style="margin-top:16px;" href="/new-plan">新建行程</a>';
+        $('#backBtn').href = '/home';
+        return;
+      }
+      if (!pid) pid = projects[0] && projects.slice().sort((a, b) => b.id - a.id)[0].id;
+      $('#backBtn').href = '/itinerary?project_id=' + pid;
+      renderProjChips();
+
+      const [p, sum, exp, allItems, budgetData] = await Promise.all([
+        api('/api/v1/projects/' + pid),
+        api('/api/v1/projects/' + pid + '/expenses/summary'),
+        api('/api/v1/projects/' + pid + '/expenses'),
+        api('/api/v1/projects/' + pid + '/items'),
+        api('/api/v1/projects/' + pid + '/budget'),
+      ]);
+      $('#cityLabel').textContent = p.city;
+      summary = sum; expenses = exp; items = allItems;
+      tradeoffs = budgetData.tradeoffs || [];
+      renderSummary(); renderCategories(); renderAdvice(); renderBills(); renderSelect();
+    } catch (e) { toast(e.message); }
+  }
+
+  function renderSummary() {
+    $('#spentTotal').textContent = fmtMoney(summary.spent_total);
+    $('#estTotal').textContent = fmtMoney(summary.estimated_total);
+    const pct = summary.estimated_total > 0 ? Math.min(100, summary.spent_total / summary.estimated_total * 100) : 0;
+    $('#spentBar').style.width = pct + '%';
+    $('#spentBar').closest('.progress').classList.toggle('danger', summary.over_estimate > 0);
+    $('#mPer').textContent = fmtMoney(summary.per_person);
+    $('#mRemain').textContent = fmtMoney(summary.remaining);
+    $('#mDays').textContent = fmtNum(summary.coverage_days);
+  }
+
+  function renderCategories() {
+    const order = DISPLAY_ORDER;
+    const cats = [...summary.categories].sort((a, b) => order.indexOf(a.category) - order.indexOf(b.category));
+    $('#catList').innerHTML = cats.map(c => {
+      const budget = c.budget, spent = c.spent;
+      const pct = (budget && budget > 0) ? Math.min(100, spent / budget * 100) : 0;
+      return '<div class="row"><div class="grow"><div class="flex-between">' +
+        '<span class="h2" style="font-size:15px;">' + icon(catIcon(c.category), 16) + ' ' + c.category + '</span>' +
+        '<span class="num">' + fmtMoney(spent) + ' / ' + (budget == null ? '—' : fmtMoney(budget)) + '</span></div>' +
+        '<div class="progress thin mt8"><i style="width:' + pct + '%;"></i></div></div></div>';
+    }).join('');
+  }
+
+  function renderAdvice() {
+    const el = $('#adviceList');
+    if (!tradeoffs.length) {
+      el.innerHTML = '<div class="empty" style="padding:24px;">' + icon('check', 44) + '<div class="t">预算充足，无需砍单</div></div>';
+      return;
+    }
+    el.innerHTML = tradeoffs.map(t =>
+      '<div class="advice-card flex-between" id="adv-' + t.item_id + '">' +
+        '<div class="grow"><div class="h2" style="font-size:14px;">' + esc(t.name) + '</div>' +
+        '<div class="caption dim">' + esc(t.type || '') + ' · Day' + (t.day || '—') + ' · ' + fmtPrice(t.price) + ' · ' + esc(t.reason || '') + '</div></div>' +
+        '<span class="act" data-cut="' + t.item_id + '" data-day="' + (t.day || '') + '">采用</span>' +
+      '</div>'
+    ).join('');
+  }
+
+  function renderBills() {
+    $('#overWarn').innerHTML = summary.over_estimate > 0
+      ? '<div class="card" style="border-left:4px solid var(--danger);background:var(--danger-soft);margin-bottom:10px;color:var(--danger);">已超出预估 ' + fmtMoney(summary.over_estimate) + '</div>' : '';
+    if (!expenses.length) {
+      $('#billList').innerHTML = '<div class="empty">' + icon('wallet', 50) + '<div class="t">还没有账单</div><div class="caption">点右上「记一笔」开始记录</div></div>';
+      return;
+    }
+    const groups = {};
+    expenses.forEach(e => {
+      const k = dateLabel(e.spent_at);
+      (groups[k] = groups[k] || []).push(e);
+    });
+    $('#billList').innerHTML = Object.keys(groups).map(k =>
+      '<div class="group-label">' + k + '</div>' +
+      groups[k].map(e =>
+        '<div class="card" style="padding:12px;margin-top:8px;"><div class="flex-between">' +
+          '<div class="grow" style="min-width:0;"><div class="ellipsis" style="font-weight:600;">' + esc(e.note || e.item_name || '消费') + '</div>' +
+          '<div class="caption dim">' + '<span class="cat-tag">' + esc(e.category || '其他') + '</span>' + (e.item_day ? ' Day' + e.item_day : '') + '</div></div>' +
+          '<div class="flex gap8"><span class="num" style="color:var(--primary);">' + fmtMoney(e.amount) + '</span>' +
+          '<span class="dim" style="cursor:pointer;" data-del="' + e.id + '">' + icon('trash', 15) + '</span></div>' +
+        '</div></div>'
+      ).join('')
+    ).join('');
+  }
+
+  function renderSelect() {
+    const scheduled = items.filter(it => it.day != null && !it.dropped);
+    $('#expItem').innerHTML = '<option value="">不关联</option>' +
+      scheduled.map(it => '<option value="' + it.id + '">Day' + it.day + ' · ' + esc(it.name) + '</option>').join('');
+  }
+
+  // 切换行程
+  $('#projChips').addEventListener('click', e => {
+    const c = e.target.closest('[data-pid]'); if (!c) return;
+    pid = c.dataset.pid; renderProjChips(); load();
+  });
+
+  // Tab 切换
+  $$('.tabs .tab').forEach(t => t.addEventListener('click', () => {
+    $$('.tabs .tab').forEach(x => x.classList.remove('on'));
+    t.classList.add('on');
+    $('#panel-budget').classList.toggle('hide', t.dataset.tab !== 'budget');
+    $('#panel-bills').classList.toggle('hide', t.dataset.tab !== 'bills');
+  }));
+
+  // 砍单采用 / 撤销
+  $('#adviceList').addEventListener('click', async e => {
+    const b = e.target.closest('[data-cut]'); if (!b) return;
+    const id = b.dataset.cut, day = b.dataset.day;
+    const isCut = b.textContent.trim() === '采用';
+    try {
+      await api('/api/v1/items/' + id, { method: 'PATCH', body: { day: isCut ? null : (day ? Number(day) : null) } });
+      toast(isCut ? '已采用砍单' : '已撤销');
+      load();
+    } catch (err) { toast(err.message); }
+  });
+
+  // 删除账单
+  $('#billList').addEventListener('click', async e => {
+    const b = e.target.closest('[data-del]'); if (!b) return;
+    if (!confirm('删除这笔账单？')) return;
+    try { await api('/api/v1/expenses/' + b.dataset.del, { method: 'DELETE' }); load(); }
+    catch (err) { toast(err.message); }
+  });
+
+  // 记一笔
+  $('#expCats').innerHTML = CATS.map(c => '<span class="chip ' + (c === selCat ? 'on' : '') + '" data-c="' + c + '">' + c + '</span>').join('');
+  $('#expCats').addEventListener('click', e => {
+    const c = e.target.closest('[data-c]'); if (!c) return;
+    $$('#expCats .chip').forEach(x => x.classList.remove('on'));
+    c.classList.add('on'); selCat = c.dataset.c;
+  });
+
+  $('#addExpense').onclick = () => { $('#expAmount').value = ''; $('#expNote').value = ''; openSheet(); setTimeout(() => $('#expAmount').focus(), 250); };
+
+  $('#expSave').onclick = async () => {
+    const amount = Number($('#expAmount').value);
+    if (!amount || amount <= 0) { toast('请输入有效金额'); return; }
+    const body = {
+      amount, category: selCat,
+      note: $('#expNote').value.trim() || null,
+      item_id: $('#expItem').value ? Number($('#expItem').value) : null,
+    };
+    try {
+      await api('/api/v1/projects/' + pid + '/expenses', { method: 'POST', body });
+      closeSheet(); toast('已记录');
+      $$('.tabs .tab').forEach(x => x.classList.toggle('on', x.dataset.tab === 'bills'));
+      $('#panel-budget').classList.add('hide'); $('#panel-bills').classList.remove('hide');
+      load();
+    } catch (e) { toast(e.message); }
+  };
+
+  renderNav('budget');
+  load();
+})();
+</script>
+{% endblock %}

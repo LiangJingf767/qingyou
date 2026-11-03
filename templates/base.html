@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>{% block title %}轻旅{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  <div class="frame">
+    <div class="main">
+      {% block content %}{% endblock %}
+    </div>
+
+    {% block nav %}{% endblock %}
+
+    <div class="sheet-mask" id="sheet-mask"></div>
+    {% block sheet %}{% endblock %}
+    <div id="toast"></div>
+  </div>
+
+  <script src="/static/js/api.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

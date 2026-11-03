@@ -1,0 +1,13 @@
+# 密钥与本地配置（绝不提交，防止 API Key 泄露）
+config.py
+
+# 本地数据库与用户上传数据
+qiongyou.db
+*.db
+static/uploads/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

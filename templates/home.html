@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% block title %}首页 · 轻旅{% endblock %}
+
+{% block content %}
+<header class="flex-between" style="margin-bottom:16px;">
+  <div>
+    <div class="caption" id="greet">你好呀</div>
+    <div class="h1" style="margin-top:2px;">今天想去哪儿？</div>
+  </div>
+  <div style="width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,#3B7A63,#2F6B52);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:17px;">游</div>
+</header>
+
+<a class="search-pill" href="/search">
+  {{ icon('search', 18) }}
+  <span>搜索目的地，如 成都 / 北京 / 上海</span>
+</a>
+
+<div class="chips mt16" id="filterChips">
+  <span class="chip on" data-f="all">全部</span>
+  <span class="chip" data-f="upcoming">未开始</span>
+  <span class="chip" data-f="ongoing">进行中</span>
+  <span class="chip" data-f="done">已结束</span>
+</div>
+
+<div class="block" id="nextCard"></div>
+
+<div class="block">
+  <div class="block-title"><span class="h2">我的行程</span><a class="btn-text" href="/new-plan">+ 新建</a></div>
+  <div id="projectList"></div>
+</div>
+{% endblock %}
+
+{% block nav %}<nav class="navbar" id="navbar"></nav>{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  let projects = [];
+  let filter = 'all';
+
+  function status(p) {
+    if (!p.start_date) return 'upcoming';
+    const start = new Date(p.start_date + 'T00:00:00');
+    const end = new Date(start); end.setDate(end.getDate() + (p.days || 1));
+    const now = new Date(); now.setHours(0, 0, 0, 0);
+    if (now < start) return 'upcoming';
+    if (now <= end) return 'ongoing';
+    return 'done';
+  }
+  function progress(p) {
+    if (!p.start_date) return 0;
+    const start = new Date(p.start_date + 'T00:00:00');
+    const days = Math.max(1, p.days || 1);
+    const now = new Date(); now.setHours(0, 0, 0, 0);
+    if (now < start) return 0;
+    const el = Math.round((now - start) / 86400000);
+    return Math.min(100, Math.round(el / days * 100));
+  }
+  function daysLeft(p) {
+    if (!p.start_date) return null;
+    const start = new Date(p.start_date + 'T00:00:00');
+    const now = new Date(); now.setHours(0, 0, 0, 0);
+    return Math.round((start - now) / 86400000);
+  }
+
+  function renderNext() {
+    const el = $('#nextCard');
+    if (!projects.length) { el.innerHTML = ''; return; }
+    const upcoming = projects.filter(p => status(p) === 'upcoming').sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''));
+    const p = upcoming[0] || projects[0];
+    const st = status(p);
+    const prog = progress(p);
+    const left = daysLeft(p);
+    let sub = '';
+    if (st === 'upcoming' && left !== null) sub = (left > 0 ? '还有 ' + left + ' 天出发' : '今天出发');
+    else if (st === 'ongoing') sub = '旅程进行中';
+    else sub = '旅程已结束';
+    el.innerHTML =
+      '<a class="card" href="/itinerary?project_id=' + p.id + '" style="display:block;">' +
+        '<div class="caption dim">下一趟行程 · ' + (st === 'upcoming' ? '未开始' : (st === 'ongoing' ? '进行中' : '已结束')) + '</div>' +
+        '<div class="flex-between" style="margin:6px 0 12px;">' +
+          '<div><div class="h1">' + esc(p.city) + '</div>' +
+          '<div class="caption dim">' + esc(p.start_date || '日期待定') + ' · ' + p.days + ' 天 · ' + p.people + ' 人</div></div>' +
+          '<div class="num" style="font-size:20px;color:var(--primary);">' + prog + '%</div>' +
+        '</div>' +
+        '<div class="progress"><i style="width:' + prog + '%"></i></div>' +
+        '<div class="caption dim" style="margin-top:8px;">' + sub + '</div>' +
+      '</a>';
+  }
+
+  function renderList() {
+    const el = $('#projectList');
+    const list = projects.filter(p => filter === 'all' || status(p) === filter);
+    if (!list.length) {
+      el.innerHTML = '<div class="empty">' + icon('map', 56) + '<div class="t">' +
+        (projects.length ? '没有符合条件的行程' : '还没有行程，快去新建一个吧') + '</div>' +
+        '<a class="btn btn-primary" style="margin-top:16px;" href="/new-plan">新建行程</a></div>';
+      return;
+    }
+    el.innerHTML = list.map(p => {
+      const st = status(p), prog = progress(p);
+      const stLabel = st === 'upcoming' ? '未开始' : (st === 'ongoing' ? '进行中' : '已结束');
+      const thumb = p.cover
+        ? '<img src="/' + esc(p.cover) + '" style="width:100%;height:100%;object-fit:cover;">'
+        : icon('pin', 20);
+      return '<a class="card" href="/itinerary?project_id=' + p.id + '" style="display:block;">' +
+        '<div class="flex-between">' +
+          '<div class="flex gap8" style="min-width:0;">' +
+            '<div class="img-ph" style="width:48px;height:48px;overflow:hidden;">' + thumb + '</div>' +
+            '<div class="grow" style="min-width:0;">' +
+              '<div class="h2 ellipsis">' + esc(p.city) + ' <span class="caption dim">' + stLabel + '</span></div>' +
+              '<div class="caption dim">' + esc(p.start_date || '日期待定') + ' · ' + p.days + ' 天 · 预算 ' + fmtMoney(p.budget) + '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div style="text-align:right;flex-shrink:0;">' +
+            '<div class="num" style="color:var(--primary);">' + prog + '%</div>' +
+            '<span class="dim" data-del="' + p.id + '" title="删除行程" style="color:var(--text-3);cursor:pointer;display:inline-block;margin-top:6px;">' + icon('trash', 15) + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<div class="progress thin" style="margin-top:10px;"><i style="width:' + prog + '%"></i></div>' +
+      '</a>';
+    }).join('');
+  }
+
+  function renderAll() { renderNext(); renderList(); }
+
+  async function load() {
+    renderNav('home');
+    const h = new Date().getHours();
+    $('#greet').textContent = h < 6 ? '夜深了' : (h < 11 ? '早上好' : (h < 14 ? '中午好' : (h < 18 ? '下午好' : '晚上好')));
+    try { projects = await api('/api/v1/projects'); }
+    catch (e) { projects = []; toast(e.message); }
+    renderAll();
+  }
+
+  $('#filterChips').addEventListener('click', function (e) {
+    const c = e.target.closest('.chip'); if (!c) return;
+    $$('#filterChips .chip').forEach(x => x.classList.remove('on'));
+    c.classList.add('on');
+    filter = c.dataset.f;
+    renderList();
+  });
+
+  // 删除行程（卡片内垃圾桶，阻止卡片跳转）
+  $('#projectList').addEventListener('click', async e => {
+    const del = e.target.closest('[data-del]'); if (!del) return;
+    e.preventDefault(); e.stopPropagation();
+    if (!confirm('删除这个行程？相关笔记、条目、账单将一并删除，不可恢复。')) return;
+    try { await api('/api/v1/projects/' + del.dataset.del, { method: 'DELETE' }); toast('已删除'); load(); }
+    catch (err) { toast(err.message); }
+  });
+
+  load();
+})();
+</script>
+{% endblock %}

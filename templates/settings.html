@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}设置 · 轻旅{% endblock %}
+
+{% block content %}
+<div class="topbar">
+  <a class="back" href="/home">{{ icon('back', 20) }}</a>
+  <div class="title">设置</div>
+  <div class="caption">v1.0</div>
+</div>
+
+<!-- 个人卡 -->
+<div class="card flex gap8">
+  <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#3B7A63,#2F6B52);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:20px;flex-shrink:0;">游</div>
+  <div class="grow">
+    <div class="h2">穷游爱好者</div>
+    <div class="caption dim">用脚步丈量世界，花更少的钱看更多的风景</div>
+  </div>
+</div>
+
+<!-- 旅程数据 -->
+<div class="card mt16">
+  <div class="metrics">
+    <div class="m"><div class="v" id="statProjects">0</div><div class="k">行程数</div></div>
+    <div class="m"><div class="v" id="statCities">0</div><div class="k">城市数</div></div>
+    <div class="m"><div class="v" id="statItems">0</div><div class="k">记录条数</div></div>
+  </div>
+</div>
+
+<!-- 通用设置 -->
+<div class="section mt16">
+  <div class="row"><span class="grow">开启通知提醒</span><span class="switch on" data-k="notify"></span></div>
+  <div class="row"><span class="grow">自动保存行程</span><span class="switch on" data-k="autosave"></span></div>
+  <div class="row"><span class="grow">显示预算提示</span><span class="switch on" data-k="budgetHint"></span></div>
+  <div class="row"><span class="grow">行程单包含备注</span><span class="switch" data-k="includeNote"></span></div>
+  <div class="row"><span class="grow">匿名使用数据</span><span class="switch" data-k="anonymous"></span></div>
+</div>
+
+<!-- 数据与隐私 -->
+<div class="section mt16">
+  <a class="row" id="exportRow"><span class="grow">导出我的数据</span>{{ icon('chevR', 18) }}</a>
+  <div class="row" id="clearCache"><span class="grow">清除缓存</span>{{ icon('chevR', 18) }}</div>
+</div>
+
+<!-- 大模型规划（BYOK，可选） -->
+<div class="section mt16">
+  <div class="block-title"><span class="h2">大模型规划（BYOK）</span><span class="caption dim">可选</span></div>
+  <div class="caption dim" style="line-height:1.6;margin-bottom:10px;">填入你自己的 API，生成行程时用大模型个性化规划；不填则用内置规则引擎。Key 只存在本机浏览器，不上传服务器。</div>
+  <div class="chips" id="llmPresets">
+    <span class="chip" data-p="deepseek">DeepSeek</span>
+    <span class="chip" data-p="openai">OpenAI</span>
+    <span class="chip" data-p="glm">GLM</span>
+    <span class="chip" data-p="ollama">Ollama</span>
+    <span class="chip" data-p="custom">自定义</span>
+  </div>
+  <div class="field">
+    <label>接口地址 base_url</label>
+    <input class="input" id="llmBase" placeholder="https://api.deepseek.com" autocomplete="off">
+  </div>
+  <div class="field">
+    <label>模型 model</label>
+    <input class="input" id="llmModel" placeholder="deepseek-chat" autocomplete="off">
+  </div>
+  <div class="field">
+    <label>API Key</label>
+    <input class="input" id="llmKey" type="password" placeholder="sk-..." autocomplete="off">
+  </div>
+  <button class="btn btn-primary btn-block" id="llmSave">保存大模型配置</button>
+  <div class="caption dim" id="llmStatus" style="margin-top:8px;"></div>
+</div>
+
+<!-- 关于 -->
+<div class="section mt16">
+  <div class="row"><span class="grow">当前版本</span><span class="caption">v1.0.0</span></div>
+  <div class="row"><span class="grow">用户协议</span>{{ icon('chevR', 18) }}</div>
+  <div class="row"><span class="grow">意见反馈</span>{{ icon('chevR', 18) }}</div>
+</div>
+
+<div class="caption dim" style="text-align:center;margin-top:24px;">轻旅•@LLL团队</div>
+{% endblock %}
+
+{% block nav %}<nav class="navbar" id="navbar"></nav>{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  renderNav('settings');
+
+  async function load() {
+    try {
+      const projects = await api('/api/v1/projects');
+      const cities = new Set(projects.map(p => p.city));
+      $('#statProjects').textContent = projects.length;
+      $('#statCities').textContent = cities.size;
+      let total = 0;
+      await Promise.all(projects.map(async p => {
+        try { const items = await api('/api/v1/projects/' + p.id + '/items'); total += items.length; }
+        catch (e) {}
+      }));
+      $('#statItems').textContent = total;
+    } catch (e) { /* 空态 */ }
+  }
+
+  // 设置开关：localStorage 持久化（UI 层）
+  $$('.switch').forEach(sw => {
+    const k = sw.dataset.k;
+    if (localStorage.getItem('set:' + k) === 'off') sw.classList.remove('on');
+    sw.addEventListener('click', () => {
+      sw.classList.toggle('on');
+      localStorage.setItem('set:' + k, sw.classList.contains('on') ? 'on' : 'off');
+    });
+  });
+
+  $('#clearCache').addEventListener('click', () => {
+    localStorage.clear();
+    toast('缓存已清除');
+  });
+
+  $('#exportRow').addEventListener('click', () => {
+    const pid = curPid();
+    if (!pid) { toast('暂无行程可导出'); return; }
+    goto('/export?project_id=' + pid);
+  });
+
+  // ---- 大模型 BYOK 配置（localStorage 持久化）----
+  const LLM_PRESETS = {
+    deepseek: ['https://api.deepseek.com', 'deepseek-chat'],
+    openai: ['https://api.openai.com/v1', 'gpt-4o-mini'],
+    glm: ['https://open.bigmodel.cn/api/paas/v4', 'glm-4-flash'],
+    ollama: ['http://localhost:11434/v1', 'qwen2.5:7b'],
+    custom: ['', ''],
+  };
+  function loadLlmCfg() {
+    try {
+      const cfg = JSON.parse(localStorage.getItem('llm:config') || 'null');
+      if (cfg) {
+        $('#llmBase').value = cfg.base_url || '';
+        $('#llmModel').value = cfg.model || '';
+        $('#llmKey').value = cfg.api_key || '';
+        $('#llmStatus').textContent = '已配置：' + (cfg.model || '自定义模型');
+      } else {
+        $('#llmStatus').textContent = '未配置，将使用内置规则引擎';
+      }
+    } catch (e) { $('#llmStatus').textContent = '未配置，将使用内置规则引擎'; }
+  }
+  $('#llmPresets').addEventListener('click', e => {
+    const c = e.target.closest('[data-p]'); if (!c) return;
+    $$('#llmPresets .chip').forEach(x => x.classList.remove('on'));
+    c.classList.add('on');
+    const [base, model] = LLM_PRESETS[c.dataset.p] || ['', ''];
+    if (c.dataset.p !== 'custom') { $('#llmBase').value = base; $('#llmModel').value = model; }
+    else { $('#llmBase').value = ''; $('#llmModel').value = ''; }
+  });
+  $('#llmSave').onclick = () => {
+    const api_key = $('#llmKey').value.trim();
+    const base_url = $('#llmBase').value.trim();
+    const model = $('#llmModel').value.trim();
+    if (!api_key) { toast('请填写 API Key'); return; }
+    localStorage.setItem('llm:config', JSON.stringify({ base_url, model, api_key }));
+    $('#llmStatus').textContent = '已保存：' + (model || '自定义模型');
+    toast('大模型配置已保存');
+  };
+
+  loadLlmCfg();
+  load();
+})();
+</script>
+{% endblock %}

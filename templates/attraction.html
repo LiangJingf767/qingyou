@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}景点详情 · 轻旅{% endblock %}
+
+{% block content %}
+<div class="topbar">
+  <a class="back" href="/search">{{ icon('back', 20) }}</a>
+  <div class="title">景点详情</div>
+  <span class="action" id="favBtn" title="收藏">{{ icon('heart', 20) }}</span>
+</div>
+
+<!-- 主视觉：首图或占位 -->
+<div class="hero-ph" id="heroBox">{{ icon('pin', 40) }}<span class="t">图片占位</span></div>
+
+<div class="card" style="margin-top:14px;">
+  <div class="flex-between">
+    <div class="grow" style="min-width:0;">
+      <div class="h1" id="aName">—</div>
+      <div class="caption dim" style="margin-top:4px;" id="aMeta">—</div>
+    </div>
+    <div class="num" style="color:var(--primary);flex-shrink:0;" id="aPrice">—</div>
+  </div>
+  <div class="caption" style="margin-top:8px;color:var(--warning);" id="aRating">—</div>
+</div>
+
+<!-- 用户上传图片 -->
+<div class="block-title mt16"><span class="h2">{{ icon('image', 16) }} 景点图片</span><span class="caption dim">用户实拍 · 上传即见</span></div>
+<div id="imgGrid" class="img-grid"></div>
+<button class="btn btn-outline btn-block" id="uploadBtn" style="margin-top:10px;">{{ icon('image', 16) }} 上传图片</button>
+<input type="file" id="fileInput" accept="image/*" style="display:none;">
+
+<!-- 用户评价 -->
+<div class="block-title mt16"><span class="h2">{{ icon('star', 16) }} 用户评价</span><span class="caption dim" id="revCount"></span></div>
+<div id="revList"></div>
+
+<div class="bottom-bar">
+  <button class="btn btn-primary btn-block btn-lg" id="newPlanBtn">以此城市新建行程</button>
+</div>
+{% endblock %}
+
+{% block sheet %}
+<div class="sheet" id="sheet">
+  <div class="sheet-handle"></div>
+  <div class="h2" style="margin-bottom:4px;">评价「<span id="rateName">—</span>」</div>
+  <div class="caption dim" style="margin-bottom:16px;">你的评分将影响「必去景点」的客观排序</div>
+  <div id="starSel" style="display:flex;gap:6px;justify-content:center;margin-bottom:16px;font-size:34px;cursor:pointer;"></div>
+  <div class="field">
+    <label>评价（可选）</label>
+    <textarea class="input" id="rateComment" placeholder="写下你的真实体验…" style="min-height:80px;"></textarea>
+  </div>
+  <button class="btn btn-primary btn-block btn-lg" id="rateSave">提交评分</button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  const aid = qs('id');
+  if (!aid) { toast('缺少景点参数'); setTimeout(() => goto('/search'), 800); return; }
+  let detail = null, rateVal = 0;
+
+  function isFav() { return localStorage.getItem('fav:attr:' + aid) === 'on'; }
+  function syncFav() {
+    $('#favBtn').style.color = isFav() ? 'var(--danger)' : '';
+  }
+
+  function starsHtml(r) {
+    const n = Math.round(r || 0);
+    let s = '';
+    for (let i = 1; i <= 5; i++) s += '<span style="color:' + (i <= n ? 'var(--warning)' : 'var(--border)') + ';">★</span>';
+    return s;
+  }
+
+  function renderHero() {
+    const imgs = detail.images || [];
+    if (imgs.length) {
+      $('#heroBox').innerHTML = '<img src="' + esc(imgs[0].url) + '" style="width:100%;height:100%;object-fit:cover;">';
+    } else {
+      $('#heroBox').innerHTML = icon('pin', 40) + '<span class="t">图片占位</span><span class="name">' + esc(detail.name) + '</span>';
+    }
+  }
+
+  function renderImages() {
+    const imgs = detail.images || [];
+    const box = $('#imgGrid');
+    if (!imgs.length) {
+      box.innerHTML = '<div class="empty" style="padding:18px;">' + icon('image', 40) + '<div class="t">还没有图片</div><div class="caption">点「上传图片」添加实拍</div></div>';
+      return;
+    }
+    box.innerHTML = imgs.map(im =>
+      '<div style="width:104px;">' +
+        '<img src="' + esc(im.url) + '" style="width:104px;height:104px;object-fit:cover;border-radius:10px;background:var(--bg-2);" onerror="this.style.display=\'none\'">' +
+        (im.caption ? '<div class="caption dim ellipsis" style="margin-top:4px;">' + esc(im.caption) + '</div>' : '') +
+      '</div>'
+    ).join('');
+  }
+
+  function renderReviews() {
+    const rev = detail.reviews || { count: 0, avg: null, reviews: [] };
+    $('#revCount').textContent = rev.count ? rev.count + ' 条' : '';
+    const box = $('#revList');
+    if (!rev.reviews.length) {
+      box.innerHTML = '<div class="empty" style="padding:18px;">' + icon('star', 40) + '<div class="t">还没有评价</div><div class="caption">点「评分」做第一个评价的人</div></div>';
+    } else {
+      box.innerHTML = rev.reviews.map(r =>
+        '<div class="card" style="padding:12px;margin-top:10px;">' +
+          '<div class="flex-between"><div class="caption">' + starsHtml(r.rating) + '</div>' +
+          '<span class="caption dim">' + esc((r.created_at || '').slice(0, 10)) + '</span></div>' +
+          (r.comment ? '<div class="muted" style="margin-top:6px;line-height:1.6;">' + esc(r.comment) + '</div>' : '') +
+        '</div>'
+      ).join('');
+    }
+    // 评分按钮（放这里，便于每次刷新后重绑）
+    const rateBtn = '<span class="btn-text" id="rateBtn" style="margin-top:8px;">' + icon('star', 14) + ' 我要评分</span>';
+    if (rev.reviews.length) box.insertAdjacentHTML('beforeend', rateBtn);
+  }
+
+  async function load() {
+    try {
+      detail = await api('/api/v1/attractions/' + aid);
+      $('#aName').textContent = detail.name;
+      $('#aMeta').textContent = [detail.city, detail.type, detail.open_hours].filter(Boolean).join(' · ');
+      $('#aPrice').textContent = fmtPrice(detail.price);
+      $('#aRating').innerHTML = detail.rating != null
+        ? starsHtml(detail.rating) + ' ' + detail.rating + ' 分 · ' + (detail.review_count || 0) + ' 条评价'
+        : '暂无评分，快来第一个评价';
+      $('#newPlanBtn').onclick = () => goto('/new-plan?city=' + encodeURIComponent(detail.city));
+      renderHero(); renderImages(); renderReviews();
+    } catch (e) { toast(e.message); }
+  }
+
+  // 收藏
+  $('#favBtn').onclick = () => {
+    if (isFav()) { localStorage.removeItem('fav:attr:' + aid); toast('已取消收藏'); }
+    else { localStorage.setItem('fav:attr:' + aid, 'on'); toast('已收藏「' + detail.name + '」'); }
+    syncFav();
+  };
+
+  // 上传图片（multipart，不能用 JSON 封装的 api()，用原生 fetch）
+  $('#uploadBtn').onclick = () => $('#fileInput').click();
+  $('#fileInput').onchange = async () => {
+    const f = $('#fileInput').files[0];
+    if (!f) return;
+    const fd = new FormData();
+    fd.append('file', f);
+    try {
+      const res = await fetch('/api/v1/attractions/' + aid + '/images', { method: 'POST', body: fd });
+      const body = await res.json();
+      if (!body || body.code !== 0) throw new Error((body && body.message) || '上传失败');
+      toast('图片已上传');
+      $('#fileInput').value = '';
+      load();
+    } catch (e) { toast(e.message); }
+  };
+
+  // 评分
+  function renderStarSel() {
+    $('#starSel').innerHTML = [1, 2, 3, 4, 5].map(i =>
+      '<span data-s="' + i + '" style="color:' + (i <= rateVal ? 'var(--warning)' : 'var(--border)') + ';">★</span>'
+    ).join('');
+  }
+  $('#starSel').addEventListener('click', e => {
+    const s = e.target.closest('[data-s]'); if (!s) return;
+    rateVal = +s.dataset.s; renderStarSel();
+  });
+  $('#revList').addEventListener('click', e => {
+    if (!e.target.closest('#rateBtn')) return;
+    rateVal = 0; $('#rateName').textContent = detail.name; $('#rateComment').value = '';
+    renderStarSel(); openSheet();
+  });
+  $('#rateSave').onclick = async () => {
+    if (!rateVal) { toast('请先选择星级'); return; }
+    try {
+      await api('/api/v1/attractions/' + aid + '/reviews', { method: 'POST', body: { rating: rateVal, comment: $('#rateComment').value.trim() || null } });
+      closeSheet(); toast('感谢你的评价'); load();
+    } catch (e) { toast(e.message); }
+  };
+
+  syncFav();
+  load();
+})();
+</script>
+{% endblock %}

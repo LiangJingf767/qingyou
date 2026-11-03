@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}条目修正 · 轻旅{% endblock %}
+
+{% block content %}
+<div class="topbar">
+  <a class="back" id="backBtn">{{ icon('back', 20) }}</a>
+  <div class="title" id="pageTitle">修正条目</div>
+  <div class="caption" id="saveBtn" style="cursor:pointer;">保存</div>
+</div>
+
+<div class="field">
+  <label>名称</label>
+  <input class="input" id="name" placeholder="如 大熊猫繁育研究基地">
+</div>
+
+<div class="field">
+  <label>类型</label>
+  <div class="chips" id="typeChips">
+    <span class="chip" data-t="景点">景点</span>
+    <span class="chip" data-t="机位">机位</span>
+    <span class="chip" data-t="美食">美食</span>
+  </div>
+</div>
+
+<div class="field">
+  <label>门票（元）</label>
+  <input class="input" id="price" type="number" inputmode="decimal" placeholder="0 表示免费，留空表示待补全">
+</div>
+
+<div class="field">
+  <label>开放时间</label>
+  <input class="input" id="openHours" placeholder="如 08:30-17:00 或 全天开放">
+</div>
+
+<div class="field">
+  <label>停留时长（分钟）</label>
+  <input class="input" id="duration" type="number" inputmode="numeric" placeholder="如 120">
+</div>
+
+<div class="field">
+  <label>坐标（可选）</label>
+  <div class="flex gap8">
+    <input class="input" id="lng" type="number" step="0.000001" inputmode="decimal" placeholder="经度 如 104.066">
+    <input class="input" id="lat" type="number" step="0.000001" inputmode="decimal" placeholder="纬度 如 30.573">
+  </div>
+  <div class="caption dim" style="margin-top:4px;">留空则系统自动获取；自动获取失败时可在此手动填写（或回行程页点「地图选点」）</div>
+</div>
+
+<div class="field">
+  <label>来源</label>
+  <div class="input" id="source" style="color:var(--text-3);">—</div>
+</div>
+
+<div class="field" id="imgSection" style="display:none;">
+  <label>条目照片（记录）</label>
+  <div id="itemImgGrid" class="img-grid"></div>
+  <button class="btn btn-outline btn-block" id="imgUploadBtn" style="margin-top:10px;">{{ icon('image', 16) }} 上传照片</button>
+  <input type="file" id="imgInput" accept="image/*" style="display:none;">
+</div>
+
+<div class="main-cta">
+  <button class="btn btn-primary btn-block btn-lg" id="submit">保存</button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  const pid = qs('project_id');
+  const itemId = qs('item_id');
+  const ref = qs('ref') || 'capture';
+  const day = qs('day');
+  let type = null;
+
+  const backHref = ref === 'itinerary' ? '/itinerary?project_id=' + pid : '/capture?project_id=' + pid;
+  $('#backBtn').href = backHref;
+
+  $$('#typeChips .chip').forEach(c => c.addEventListener('click', () => {
+    $$('#typeChips .chip').forEach(x => x.classList.remove('on'));
+    c.classList.add('on'); type = c.dataset.t;
+  }));
+
+  function syncPriceHighlight() {
+    const p = $('#price').value.trim();
+    $('#price').classList.toggle('highlight', p === '');
+  }
+  $('#price').addEventListener('input', syncPriceHighlight);
+
+  async function load() {
+    if (!itemId) {
+      $('#pageTitle').textContent = '手动新增条目';
+      $('#source').textContent = '手动填写';
+      return;
+    }
+    try {
+      const items = await api('/api/v1/projects/' + pid + '/items');
+      const it = items.find(x => String(x.id) === itemId);
+      if (!it) { toast('条目不存在'); return; }
+      $('#name').value = it.name || '';
+      if (it.type) { $$('#typeChips .chip').forEach(c => { if (c.dataset.t === it.type) { c.classList.add('on'); type = it.type; } }); }
+      $('#price').value = (it.price === null || it.price === undefined) ? '' : it.price;
+      $('#openHours').value = it.open_hours || '';
+      $('#duration').value = it.est_duration || '';
+      $('#lng').value = (it.lng === null || it.lng === undefined) ? '' : it.lng;
+      $('#lat').value = (it.lat === null || it.lat === undefined) ? '' : it.lat;
+      $('#source').textContent = it.price_source ? (it.price_source + (it.source_ids ? ' · 笔记#' + it.source_ids : '')) : '—';
+      syncPriceHighlight();
+      $('#imgSection').style.display = 'block';
+      loadImages();
+    } catch (e) { toast(e.message); }
+  }
+
+  function renderImages(images) {
+    const box = $('#itemImgGrid');
+    if (!images.length) {
+      box.innerHTML = '<div class="empty" style="padding:16px;">' + icon('image', 36) + '<div class="t">还没有照片</div><div class="caption">点「上传照片」记录实地体验</div></div>';
+      return;
+    }
+    box.innerHTML = images.map(im =>
+      '<div style="width:88px;">' +
+        '<img src="' + esc(im.url) + '" style="width:88px;height:88px;object-fit:cover;border-radius:10px;background:var(--bg-2);">' +
+        (im.caption ? '<div class="caption dim ellipsis" style="margin-top:4px;">' + esc(im.caption) + '</div>' : '') +
+      '</div>'
+    ).join('');
+  }
+
+  async function loadImages() {
+    try {
+      renderImages(await api('/api/v1/items/' + itemId + '/images'));
+    } catch (e) { renderImages([]); }
+  }
+
+  $('#imgUploadBtn').onclick = () => $('#imgInput').click();
+  $('#imgInput').onchange = async () => {
+    const f = $('#imgInput').files[0]; if (!f) return;
+    const fd = new FormData(); fd.append('file', f);
+    try {
+      const res = await fetch('/api/v1/items/' + itemId + '/images', { method: 'POST', body: fd });
+      const b = await res.json();
+      if (!b || b.code !== 0) throw new Error((b && b.message) || '上传失败');
+      toast('照片已上传'); $('#imgInput').value = ''; loadImages();
+    } catch (e) { toast(e.message); }
+  };
+
+  $('#submit').onclick = async () => {
+    const name = $('#name').value.trim();
+    if (!name) { toast('请填写名称'); return; }
+    const body = {
+      name, type,
+      price: $('#price').value === '' ? null : Number($('#price').value),
+      open_hours: $('#openHours').value.trim() || null,
+      est_duration: $('#duration').value === '' ? null : Number($('#duration').value),
+      lng: $('#lng').value === '' ? null : Number($('#lng').value),
+      lat: $('#lat').value === '' ? null : Number($('#lat').value),
+    };
+    try {
+      if (itemId) {
+        await api('/api/v1/items/' + itemId, { method: 'PATCH', body });
+      } else {
+        await api('/api/v1/projects/' + pid + '/items', { method: 'POST', body: { ...body, price_source: '手动', day: day ? Number(day) : null } });
+      }
+      toast('已保存');
+      setTimeout(() => goto(backHref), 400);
+    } catch (e) { toast(e.message); }
+  };
+
+  $('#saveBtn').onclick = () => $('#submit').click();
+
+  load();
+})();
+</script>
+{% endblock %}

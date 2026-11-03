@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}导出 · 轻旅{% endblock %}
+
+{% block content %}
+<div class="topbar">
+  <a class="back" id="backBtn">{{ icon('back', 20) }}</a>
+  <div class="title">导出行程单</div>
+  <div class="caption" id="cityLabel"></div>
+</div>
+
+<div class="field">
+  <label>格式</label>
+  <div class="chips" id="fmtChips">
+    <span class="chip on" data-f="md">Markdown</span>
+    <span class="chip" data-f="txt">纯文本</span>
+    <span class="chip" data-f="html">HTML</span>
+    <span class="chip" data-f="pdf">PDF</span>
+    <span class="chip" data-f="png">长图</span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="caption dim">文件名</div>
+  <div class="h2" id="filename" style="margin-top:4px;">—</div>
+  <div class="divider"></div>
+  <div class="caption dim">摘要</div>
+  <div id="summary" class="muted" style="margin-top:4px;">—</div>
+</div>
+
+<div class="main-cta" style="margin-top:24px;">
+  <div class="flex gap8">
+    <button class="btn btn-outline" id="copyBtn" style="flex:1;">{{ icon('doc', 16) }} 复制</button>
+    <button class="btn btn-primary" id="downloadBtn" style="flex:2;">{{ icon('export', 16) }} 下载文件</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+  const pid = qs('project_id');
+  if (!pid) { toast('缺少行程参数'); setTimeout(() => goto('/home'), 800); return; }
+  $('#backBtn').href = '/itinerary?project_id=' + pid;
+  const TEXT_FMT = { md: 1, txt: 1, html: 1 };
+  let fmt = 'md', last = null;
+
+  async function load() {
+    try {
+      const p = await api('/api/v1/projects/' + pid);
+      $('#cityLabel').textContent = p.city;
+      $('#summary').textContent = p.city + ' ' + p.days + ' 日穷游行程单 · 出发 ' + (p.start_date || '待定') + ' · 预算 ' + fmtMoney(p.budget);
+      fetchExport();
+    } catch (e) { toast(e.message); }
+  }
+
+  async function fetchExport() {
+    try {
+      const d = await api('/api/v1/projects/' + pid + '/export?format=' + fmt);
+      last = d;
+      $('#filename').textContent = d.filename;
+      $('#copyBtn').style.display = TEXT_FMT[fmt] ? '' : 'none';
+    } catch (e) { toast(e.message); }
+  }
+
+  function download(name, blob) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function toBlob(d) {
+    if (d.binary) {
+      const bin = atob(d.content);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return new Blob([arr], { type: d.mime || 'application/octet-stream' });
+    }
+    const mime = d.format === 'html' ? 'text/html' : (d.format === 'md' ? 'text/markdown' : 'text/plain');
+    return new Blob([d.content], { type: mime });
+  }
+
+  $('#fmtChips').addEventListener('click', e => {
+    const c = e.target.closest('[data-f]'); if (!c) return;
+    $$('#fmtChips .chip').forEach(x => x.classList.remove('on'));
+    c.classList.add('on'); fmt = c.dataset.f; fetchExport();
+  });
+
+  $('#copyBtn').onclick = async () => {
+    if (!last) await fetchExport();
+    if (!last) return;
+    try { await navigator.clipboard.writeText(last.content); toast('已复制到剪贴板'); }
+    catch (e) { toast('复制失败，请手动选择复制'); }
+  };
+
+  $('#downloadBtn').onclick = async () => {
+    if (!last) await fetchExport();
+    if (!last) return;
+    download(last.filename, toBlob(last));
+    toast('已导出：' + last.filename);
+  };
+
+  load();
+})();
+</script>
+{% endblock %}

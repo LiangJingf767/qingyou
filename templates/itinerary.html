@@ -1,0 +1,566 @@
+{% extends "base.html" %}
+{% block title %}行程 · 轻旅{% endblock %}
+
+{% block content %}
+<div class="topbar">
+  <a class="back" href="/home">{{ icon('back', 20) }}</a>
+  <div class="title" id="title">行程</div>
+  <div class="flex gap8">
+    <span class="action" id="coverBtn" title="上传封面">{{ icon('camera', 20) }}</span>
+    <a class="action" id="exportLink">{{ icon('export', 20) }}</a>
+  </div>
+</div>
+<input type="file" id="coverInput" accept="image/*" style="display:none;">
+
+<div id="conflicts"></div>
+<div id="planTips"></div>
+
+<div class="flex gap8 mt8">
+  <button class="btn btn-ghost grow" id="appendBtn">{{ icon('doc', 16) }} 追加攻略</button>
+  <button class="btn btn-outline grow" id="diagnoseBtn">{{ icon('star', 16) }} AI 诊断行程</button>
+</div>
+<div id="appendResult"></div>
+<div id="diagnosis"></div>
+
+<div class="tabs" id="dayTabs"></div>
+<div id="weatherBox" style="margin-top:10px;"></div>
+<div class="flex-between mt8">
+  <div class="caption dim" id="dayTitle">—</div>
+  <a class="btn-text" id="addBtn">{{ icon('plus', 16) }} 添加到当日</a>
+</div>
+
+<div id="pickBanner"></div>
+
+<div class="map-wrap mt8">
+  <div class="map-ph" id="mapBox"></div>
+  <div class="map-empty hide" id="mapEmpty">
+    {{ icon('map', 28) }}
+    <div class="t">该日暂无坐标</div>
+    <div class="caption dim">未获取坐标，请手动完善或配置 API</div>
+  </div>
+</div>
+<div id="routeInfo" style="margin-top:10px;"></div>
+
+<div id="itemList" style="margin-top:14px;"></div>
+{% endblock %}
+
+{% block nav %}<nav class="navbar" id="navbar"></nav>{% endblock %}
+
+{% block sheet %}
+<div class="sheet" id="sheet">
+  <div class="sheet-handle"></div>
+  <div class="h2" style="margin-bottom:12px;">添加到 Day <span id="sheetDay">1</span></div>
+  <div id="candidates"></div>
+  <a class="btn btn-outline btn-block" id="manualAdd" style="margin-top:16px;">{{ icon('plus', 16) }} 手动新增条目</a>
+</div>
+
+<div class="sheet" id="appendSheet">
+  <div class="sheet-handle"></div>
+  <div class="h2" style="margin-bottom:12px;">追加攻略</div>
+  <textarea class="input" id="appendText" placeholder="粘贴新找到的攻略/笔记，或点下方「截图识别」上传图片…" style="min-height:150px;"></textarea>
+  <input type="file" id="appendImg" accept="image/*" style="display:none;">
+  <div class="flex gap8 mt8">
+    <button class="btn btn-ghost" id="appendExample">示例</button>
+    <button class="btn btn-ghost" id="appendOcr">截图识别</button>
+    <button class="btn btn-primary grow" id="appendGo">识别并合并</button>
+  </div>
+  <div class="caption dim mt8">重复地点热度 +1，新地点加入备选库。</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.AMAP_CONFIG = { key: "{{ config.AMAP_JS_KEY }}", securityJsCode: "{{ config.AMAP_JS_SECURITY_CODE }}" };
+</script>
+<script src="/static/js/amap-loader.js"></script>
+<script>
+(function () {
+  'use strict';
+  const pid = qs('project_id');
+  if (!pid) { toast('缺少行程参数'); setTimeout(() => goto('/home'), 800); return; }
+  let days = [], items = [], curDay = 1;
+  let amap = null;
+  let weather = [], weatherFailed = false;
+  let mapGen = 0;
+  let city = '';
+  let pickingItem = null, pickHandler = null, cityCoord = null;
+
+  $('#exportLink').href = '/export?project_id=' + pid;
+
+  function dayItems() { return (days.find(d => d.day === curDay) || { items: [] }).items; }
+
+  async function load() {
+    try {
+      const [p, itin, allItems, confs] = await Promise.all([
+        api('/api/v1/projects/' + pid),
+        api('/api/v1/projects/' + pid + '/itinerary'),
+        api('/api/v1/projects/' + pid + '/items'),
+        api('/api/v1/projects/' + pid + '/conflicts'),
+      ]);
+      $('#title').textContent = p.city + ' · ' + p.days + ' 天';
+      city = p.city;
+      days = itin; items = allItems;
+      renderConflicts(confs);
+      renderTips(p.plan_tips);
+      renderTabs(p.days);
+      renderDay();
+      loadWeather(p);
+    } catch (e) { toast(e.message); }
+  }
+
+  async function loadWeather(p) {
+    weather = []; weatherFailed = false;
+    try {
+      weather = await api('/api/v1/weather?city=' + encodeURIComponent(p.city) + '&days=' + p.days);
+    } catch (e) {
+      weatherFailed = true;
+    }
+    renderWeather(curDay, dayItems());
+  }
+
+  function renderConflicts(confs) {
+    const el = $('#conflicts');
+    if (!confs.length) { el.innerHTML = ''; return; }
+    el.innerHTML = '<div class="card" style="border-left:4px solid var(--warning);background:var(--warning-soft);">' +
+      '<div class="flex gap8"><span style="color:var(--warning);">' + icon('clock', 18) + '</span><span class="h2" style="color:#8a6a1f;">行程提示</span></div>' +
+      confs.map(c => '<div class="caption" style="margin-top:6px;color:#8a6a1f;">· ' + esc(c.message) + '</div>').join('') +
+      '</div><div style="height:12px;"></div>';
+  }
+
+  function renderTips(tips) {
+    const el = $('#planTips');
+    if (!Array.isArray(tips) || !tips.length) { el.innerHTML = ''; return; }
+    el.innerHTML = '<div class="card" style="border-left:4px solid var(--primary);background:var(--primary-soft);">' +
+      '<div class="flex gap8"><span>' + icon('star', 16) + '</span><span class="h2">规划建议</span></div>' +
+      tips.map(s => '<div class="caption" style="margin-top:6px;color:var(--text-2);">· ' + esc(s) + '</div>').join('') +
+      '</div><div style="height:12px;"></div>';
+  }
+
+  function renderTabs(totalDays) {
+    const n = Math.max(1, totalDays);
+    if (curDay > n) curDay = n;
+    $('#dayTabs').innerHTML = Array.from({ length: n }, (_, i) =>
+      '<span class="tab ' + (i + 1 === curDay ? 'on' : '') + '" data-d="' + (i + 1) + '">Day ' + (i + 1) + '</span>'
+    ).join('');
+  }
+
+  function renderDay() {
+    $$('#dayTabs .tab').forEach(t => t.classList.toggle('on', +t.dataset.d === curDay));
+    const list = dayItems();
+    const totalPrice = list.reduce((s, it) => s + (it.price || 0), 0);
+    const totalDur = list.reduce((s, it) => s + (it.est_duration || 0), 0);
+    $('#dayTitle').textContent = 'Day ' + curDay + ' · ' + list.length + ' 个行程 · 门票 ' + fmtPrice(totalPrice || null) + ' · 约 ' + Math.round(totalDur / 60 * 10) / 10 + ' 小时';
+    $('#sheetDay').textContent = curDay;
+    renderWeather(curDay, list);
+    renderMap(list);
+    renderRouteInfo(list);
+    renderList(list);
+  }
+
+  const OUTDOOR = ['沙滩', '海边', '海滩', '爬山', '山', '公园', '徒步', '户外', '湖', '岛', '峡谷', '漂流', '露营', '栈道', '观景', '古城', '古镇'];
+  const RAIN_RE = /雨|雪|雷|雹/;
+
+  function weatherEmoji(t) {
+    t = t || '';
+    if (t.indexOf('雷') >= 0) return '⛈️';
+    if (t.indexOf('雪') >= 0) return '❄️';
+    if (t.indexOf('大雨') >= 0 || t.indexOf('暴雨') >= 0) return '🌧️';
+    if (t.indexOf('雨') >= 0) return '🌧️';
+    if (t.indexOf('阴') >= 0) return '☁️';
+    if (t.indexOf('多云') >= 0) return '⛅';
+    if (t.indexOf('晴') >= 0) return '☀️';
+    return '🌤️';
+  }
+
+  function weatherAdvice(t) {
+    t = t || '';
+    if (t.indexOf('雨') >= 0) return '记得带伞';
+    if (t.indexOf('雪') >= 0) return '注意保暖防滑';
+    if (t.indexOf('晴') >= 0) return '建议穿短袖，注意防晒';
+    return '';
+  }
+
+  function weatherAlert(day, list) {
+    const w = weather[day - 1];
+    if (!w) return '';
+    const cond = (w.text_day || '') + (w.text_night || '');
+    if (!RAIN_RE.test(cond)) return '';
+    const outdoor = list.filter(it => OUTDOOR.some(k => (it.name || '').indexOf(k) >= 0));
+    if (!outdoor.length) return '';
+    let swapDay = null;
+    weather.forEach((ww, i) => {
+      if (i + 1 === day || swapDay != null) return;
+      if (ww && !RAIN_RE.test((ww.text_day || '') + (ww.text_night || ''))) swapDay = i + 1;
+    });
+    const names = outdoor.map(o => o.name).join('、');
+    const tip = swapDay
+      ? 'Day ' + day + ' 有雨，建议把户外行程「' + names + '」与 Day ' + swapDay + ' 的室内行程对调'
+      : 'Day ' + day + ' 有雨，户外行程「' + names + '」建议改室内或改期';
+    return '<div class="advice-card" style="margin-top:8px;background:var(--warning-soft);border-color:transparent;">' +
+      '<div class="flex gap8"><span style="color:#B8860B;">' + icon('clock', 14) + '</span><span class="caption" style="color:#8a6a1f;line-height:1.6;">' + esc(tip) + '</span></div></div>';
+  }
+
+  function renderWeather(day, list) {
+    const box = $('#weatherBox');
+    if (weatherFailed) {
+      box.innerHTML = '<div class="caption dim" style="padding:6px 4px;">' + icon('clock', 13) + ' 天气信息获取失败</div>';
+      return;
+    }
+    const w = weather[day - 1];
+    if (!w) {
+      box.innerHTML = weather.length ? '<div class="caption dim" style="padding:6px 4px;">暂无该日预报</div>' : '';
+      return;
+    }
+    const emoji = weatherEmoji(w.text_day);
+    const cond = w.text_day || w.text_night || '—';
+    const temp = (w.low != null && w.high != null) ? (w.low + '℃ ~ ' + w.high + '℃') : '';
+    const advice = weatherAdvice(w.text_day);
+    box.innerHTML = '<div class="weather-bar">' +
+      '<span style="font-size:22px;">' + emoji + '</span>' +
+      '<span class="h2" style="font-size:15px;">' + esc(cond) + '</span>' +
+      (temp ? '<span class="caption dim">' + esc(temp) + '</span>' : '') +
+      (advice ? '<span class="caption" style="color:var(--text-2);">' + esc(advice) + '</span>' : '') +
+      '</div>' + weatherAlert(day, list);
+  }
+
+  async function renderRouteInfo(list) {
+    const box = $('#routeInfo');
+    const pts = list.filter(it => it.lat != null && it.lng != null);
+    if (pts.length < 2) { box.innerHTML = ''; return; }
+    box.innerHTML = '<div class="block-title"><span class="h2">' + icon('map', 16) + ' 路线距离</span><span class="caption dim">高德驾车预估</span></div>';
+    let totalDist = 0, totalDur = 0, got = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      try {
+        const d = await api('/api/v1/map/directions?origin=' + a.lng + ',' + a.lat + '&destination=' + b.lng + ',' + b.lat);
+        if (d && d.distance) {
+          totalDist += d.distance; totalDur += d.duration; got++;
+          box.innerHTML += '<div class="caption" style="margin:5px 0;">' + esc(a.name) + ' → ' + esc(b.name) +
+            '：约 ' + (d.distance / 1000).toFixed(1) + ' km · ' + Math.round(d.duration / 60) + ' 分钟</div>';
+        }
+      } catch (e) { /* 高德失败跳过该段 */ }
+    }
+    if (got) box.innerHTML += '<div class="caption dim" style="margin-top:8px;">全程约 ' + (totalDist / 1000).toFixed(1) + ' km · ' + Math.round(totalDur / 60) + ' 分钟</div>';
+    else if (pts.length >= 2) box.innerHTML += '<div class="caption dim">路线距离暂不可用（高德服务未返回），仅展示点位顺序</div>';
+  }
+
+  function ensureAmap(cb) {
+    if (amap) { cb(); return; }
+    loadAMap(function (AMap) {
+      if (!amap) amap = new AMap.Map('mapBox', { zoom: 12, resizeEnable: true });
+      cb();
+    });
+  }
+
+  function renderMap(list) {
+    const pts = list.map((it, i) => ({ ...it, i: i + 1 })).filter(it => it.lat != null && it.lng != null);
+    const emptyEl = $('#mapEmpty');
+    const myGen = ++mapGen;
+    if (!pts.length) {
+      emptyEl.classList.remove('hide');
+      if (amap) amap.clearMap();
+      return;
+    }
+    emptyEl.classList.add('hide');
+    ensureAmap(function () {
+      if (myGen !== mapGen) return; // 快速切换 Day 时丢弃过期渲染
+      amap.clearMap();
+      const path = pts.map(p => [p.lng, p.lat]);
+      const overlays = [];
+      pts.forEach((p) => {
+        const m = new AMap.Marker({
+          position: [p.lng, p.lat],
+          content: '<div class="num-marker">' + p.i + '</div>',
+          offset: new AMap.Pixel(-12, -12),
+          title: p.name,
+        });
+        m.setMap(amap);
+        m.on('click', function () { toast(p.name + ' · ' + fmtPrice(p.price)); });
+        overlays.push(m);
+      });
+      if (path.length > 1) {
+        const line = new AMap.Polyline({
+          path: path,
+          strokeColor: '#2F6B52',
+          strokeWeight: 4,
+          strokeStyle: 'dashed',
+          strokeDasharray: [10, 8],
+        });
+        line.setMap(amap);
+        overlays.push(line);
+      }
+      if (path.length === 1) { amap.setCenter(path[0]); amap.setZoom(13); }
+      else { amap.setFitView(overlays); }
+    });
+  }
+
+  function renderList(list) {
+    const el = $('#itemList');
+    if (!list.length) {
+      el.innerHTML = '<div class="empty">' + icon('list', 54) + '<div class="t">当日还没有行程</div><div class="caption">点右上「添加到当日」</div></div>';
+      return;
+    }
+    el.innerHTML = list.map((it, idx) =>
+      '<div class="it-card" draggable="true" data-idx="' + idx + '" data-id="' + it.id + '">' +
+        '<span class="drag" title="拖拽排序">' + icon('drag', 18) + '</span>' +
+        '<span class="num-badge">' + (idx + 1) + '</span>' +
+        '<div class="grow" style="min-width:0;">' +
+          '<div class="h2 ellipsis" style="font-size:15px;">' + esc(it.name) + '</div>' +
+          '<div class="caption dim">' + esc(it.type || '') + (it.open_hours ? ' · ' + esc(it.open_hours) : '') + (it.est_duration ? ' · ' + it.est_duration + '分钟' : '') + '</div>' +
+          (it.note ? '<div class="caption" style="margin-top:3px;color:var(--text-2);">' + esc(it.note) + '</div>' : '') +
+          (it.lat == null || it.lng == null
+            ? '<div class="flex gap8" style="margin-top:4px;align-items:center;">' +
+                '<span class="caption" style="color:var(--warning);">' + icon('pin', 13) + ' 未获取坐标</span>' +
+                '<a class="btn-text" data-geo="' + it.id + '">自动获取</a>' +
+                '<a class="btn-text" data-pick="' + it.id + '">地图选点</a>' +
+              '</div>'
+            : '') +
+        '</div>' +
+        '<div style="text-align:right;flex-shrink:0;">' +
+          '<div class="num" style="color:var(--primary);">' + fmtPrice(it.price) + '</div>' +
+          '<div class="flex gap8" style="justify-content:flex-end;margin-top:4px;">' +
+            '<span class="dim" style="cursor:pointer;font-size:15px;" data-up="' + idx + '">▲</span>' +
+            '<span class="dim" style="cursor:pointer;font-size:15px;" data-down="' + idx + '">▼</span>' +
+            '<a href="/edit-item?project_id=' + pid + '&item_id=' + it.id + '&ref=itinerary" class="dim">' + icon('edit', 15) + '</a>' +
+            '<span class="dim" style="cursor:pointer;color:var(--danger);" data-del="' + it.id + '" title="移除">' + icon('trash', 15) + '</span>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    ).join('');
+    bindDrag();
+  }
+
+  async function persistOrder() {
+    const ids = dayItems().map(it => it.id);
+    await api('/api/v1/projects/' + pid + '/items/reorder', { method: 'POST', body: { day: curDay, item_ids: ids } });
+  }
+
+  function move(from, to) {
+    const list = days.find(d => d.day === curDay).items;
+    if (to < 0 || to >= list.length) return;
+    const [it] = list.splice(from, 1);
+    list.splice(to, 0, it);
+    renderList(list);
+    renderMap(list);
+    persistOrder().catch(e => toast(e.message));
+  }
+
+  function bindDrag() {
+    let dragId = null;
+    $$('#itemList .it-card').forEach(card => {
+      card.addEventListener('dragstart', e => { dragId = card.dataset.id; e.dataTransfer.effectAllowed = 'move'; card.classList.add('dragging'); });
+      card.addEventListener('dragend', () => { dragId = null; card.classList.remove('dragging'); });
+      card.addEventListener('dragover', e => e.preventDefault());
+      card.addEventListener('drop', e => {
+        e.preventDefault();
+        const list = days.find(d => d.day === curDay).items;
+        const from = list.findIndex(it => String(it.id) === dragId);
+        const to = list.findIndex(it => String(it.id) === card.dataset.id);
+        if (from >= 0 && to >= 0 && from !== to) move(from, to);
+      });
+    });
+  }
+
+  async function autoResolve(id, btn) {
+    if (btn.dataset.busy) return;
+    btn.dataset.busy = '1'; btn.textContent = '获取中…';
+    try {
+      await api('/api/v1/items/' + id + '/resolve-coord', { method: 'POST' });
+      toast('已自动获取坐标'); load();
+    } catch (e) { toast(e.message); btn.dataset.busy = ''; btn.textContent = '自动获取'; }
+  }
+
+  async function getCityCoord() {
+    if (cityCoord) return cityCoord;
+    try {
+      const list = await api('/api/v1/map/geocode?address=' + encodeURIComponent(city));
+      if (Array.isArray(list) && list[0] && list[0].lng != null) cityCoord = { lng: list[0].lng, lat: list[0].lat };
+    } catch (e) { /* 城市定位失败则维持地图当前视野 */ }
+    return cityCoord;
+  }
+
+  function clearPickState() {
+    if (pickHandler && amap) amap.off('click', pickHandler);
+    pickHandler = null; pickingItem = null;
+    $('#pickBanner').innerHTML = '';
+  }
+
+  function cancelPick() { clearPickState(); renderDay(); }
+
+  function startPick(itemId, name) {
+    if (pickingItem && pickingItem.id === itemId) { cancelPick(); return; }
+    pickingItem = { id: itemId, name };
+    $('#pickBanner').innerHTML =
+      '<div class="card" style="border-left:4px solid var(--primary);background:var(--primary-soft);margin-bottom:10px;">' +
+        '<div class="flex gap8" style="align-items:center;">' +
+          '<span style="color:var(--primary);">' + icon('pin', 16) + '</span>' +
+          '<span class="h2" style="font-size:14px;">为「' + esc(name) + '」选点：缩放拖动地图后点击该地点位置</span>' +
+          '<a class="btn-text" id="pickCancel" style="margin-left:auto;">取消</a>' +
+        '</div></div>';
+    $('#pickCancel').onclick = cancelPick;
+    $('#mapEmpty').classList.add('hide');
+    ensureAmap(async function () {
+      amap.clearMap();
+      const cc = await getCityCoord();
+      if (!pickingItem || pickingItem.id !== itemId) return; // 等待期间用户已取消
+      if (cc) { amap.setCenter([cc.lng, cc.lat]); amap.setZoom(12); }
+      pickHandler = function (e) {
+        const lng = e.lnglat.getLng(), lat = e.lnglat.getLat();
+        finishPick(itemId, lng, lat);
+      };
+      amap.on('click', pickHandler);
+    });
+  }
+
+  async function finishPick(itemId, lng, lat) {
+    clearPickState();
+    try {
+      await api('/api/v1/items/' + itemId, { method: 'PATCH', body: { lat, lng } });
+      toast('坐标已更新');
+    } catch (e) { toast(e.message); }
+    load();
+  }
+
+  $('#dayTabs').addEventListener('click', e => {
+    const t = e.target.closest('.tab'); if (!t) return;
+    if (pickingItem) clearPickState();
+    curDay = +t.dataset.d; renderDay();
+  });
+
+  $('#itemList').addEventListener('click', async e => {
+    const up = e.target.closest('[data-up]'), down = e.target.closest('[data-down]'), del = e.target.closest('[data-del]');
+    const geo = e.target.closest('[data-geo]'), pick = e.target.closest('[data-pick]');
+    if (up) move(+up.dataset.up, +up.dataset.up - 1);
+    if (down) move(+down.dataset.down, +down.dataset.down + 1);
+    if (geo) { autoResolve(geo.dataset.geo, geo); return; }
+    if (pick) { const it = dayItems().find(x => String(x.id) === pick.dataset.pick); if (it) startPick(it.id, it.name); return; }
+    if (del) {
+      if (!confirm('从行程中移除这个条目？')) return;
+      try { await api('/api/v1/items/' + del.dataset.del, { method: 'DELETE' }); toast('已移除'); load(); }
+      catch (err) { toast(err.message); }
+    }
+  });
+
+  async function openAdd() {
+    const cands = items.filter(it => it.day == null && !it.dropped);
+    const box = $('#candidates');
+    if (!cands.length) { box.innerHTML = '<div class="empty" style="padding:20px;">' + icon('check', 40) + '<div class="t">没有待添加的条目</div><div class="caption">可点下方「手动新增」</div></div>'; }
+    else box.innerHTML = cands.map(it =>
+      '<div class="row"><div class="grow"><div class="h2" style="font-size:15px;">' + esc(it.name) + '</div>' +
+      '<div class="caption dim">' + esc(it.type || '') + ' · ' + fmtPrice(it.price) + '</div></div>' +
+      '<button class="btn btn-ghost" data-add="' + it.id + '" style="padding:8px 14px;">添加</button></div>'
+    ).join('');
+    $('#manualAdd').href = '/edit-item?project_id=' + pid + '&ref=itinerary&day=' + curDay;
+    openSheet();
+  }
+
+  $('#addBtn').onclick = openAdd;
+
+  // 上传封面（multipart，用原生 fetch）
+  $('#coverBtn').onclick = () => $('#coverInput').click();
+  $('#coverInput').onchange = async () => {
+    const f = $('#coverInput').files[0]; if (!f) return;
+    const fd = new FormData(); fd.append('file', f);
+    try {
+      const res = await fetch('/api/v1/projects/' + pid + '/cover', { method: 'POST', body: fd });
+      const b = await res.json();
+      if (!b || b.code !== 0) throw new Error((b && b.message) || '上传失败');
+      toast('封面已更新'); $('#coverInput').value = '';
+    } catch (e) { toast(e.message); }
+  };
+
+  $('#candidates').addEventListener('click', async e => {
+    const b = e.target.closest('[data-add]'); if (!b) return;
+    try {
+      await api('/api/v1/items/' + b.dataset.add, { method: 'PATCH', body: { day: curDay } });
+      closeSheet();
+      toast('已添加到 Day ' + curDay);
+      load();
+    } catch (err) { toast(err.message); }
+  });
+
+  // ---- 追加攻略 ----
+  function openAppendSheet() { $('#sheet-mask').classList.add('show'); $('#appendSheet').classList.add('show'); }
+  function closeAppendSheet() { $('#sheet-mask').classList.remove('show'); $('#appendSheet').classList.remove('show'); }
+  $('#sheet-mask').addEventListener('click', () => { closeAppendSheet(); });
+  $('#appendBtn').onclick = () => { $('#appendText').value = ''; $('#appendResult').innerHTML = ''; openAppendSheet(); };
+  $('#appendExample').onclick = () => {
+    $('#appendText').value = 'Day1 人民公园鹤鸣茶社喝茶，免费，逛1小时。\nDay2 都江堰门票80元，8点开园，游玩半天，离市区远要早出发。';
+  };
+  $('#appendOcr').onclick = () => $('#appendImg').click();
+  $('#appendImg').onchange = async () => {
+    const f = $('#appendImg').files[0]; if (!f) return;
+    const btn = $('#appendOcr'); btn.disabled = true; btn.textContent = '识别中…';
+    try {
+      const text = await ocrImage(f);
+      const cur = $('#appendText').value.trim();
+      $('#appendText').value = cur ? cur + '\n' + text : text;
+      toast('识别成功，已填入文本');
+    } catch (e) { toast(e.message); }
+    finally { btn.disabled = false; btn.textContent = '截图识别'; $('#appendImg').value = ''; }
+  };
+  $('#appendGo').onclick = async () => {
+    const text = $('#appendText').value.trim();
+    if (!text) { toast('请先粘贴攻略内容'); return; }
+    let llmCfg = null;
+    try { llmCfg = JSON.parse(localStorage.getItem('llm:config') || 'null'); } catch (e) {}
+    const useAI = !!(llmCfg && llmCfg.api_key);
+    const btn = $('#appendGo'); btn.disabled = true; btn.textContent = useAI ? '大模型提取中…' : '识别中…';
+    try {
+      const r = await api('/api/v1/projects/' + pid + '/notes/append', { method: 'POST', body: useAI ? { text, source: '小红书', llm: llmCfg } : { text, source: '小红书' } });
+      closeAppendSheet();
+      const msg = '成功追加 ' + r.added + ' 个新地点' + (r.merged ? '，合并了 ' + r.merged + ' 个重复地点' : '');
+      $('#appendResult').innerHTML = '<div class="card" style="border-left:4px solid var(--primary);background:var(--primary-soft);margin-bottom:12px;">' +
+        '<div class="flex gap8"><span style="color:var(--primary);">' + icon('check', 16) + '</span><span class="h2">' + esc(msg) + '</span></div>' +
+        '<div class="caption" style="margin-top:6px;color:var(--text-2);">新地点已加入备选库，可点「添加到当日」排入行程</div></div>';
+      toast(msg);
+      load();
+    } catch (e) { toast(e.message); }
+    finally { btn.disabled = false; btn.textContent = '识别并合并'; }
+  };
+
+  // ---- AI 行程诊断 ----
+  function renderDiagnosis(sugs) {
+    const box = $('#diagnosis');
+    if (!sugs || !sugs.length) {
+      box.innerHTML = '<div class="card"><div class="caption dim">AI 没发现明显问题，行程看起来挺合理。</div></div>';
+      return;
+    }
+    box.innerHTML = '<div class="block-title" style="margin-top:14px;"><span class="h2">' + icon('star', 16) + ' AI 行程诊断</span></div>' +
+      sugs.map((s, i) =>
+        '<div class="card" style="margin-top:10px;border-left:4px solid var(--warning);">' +
+          '<div class="h2" style="font-size:15px;">' + esc(s.title || ('建议 ' + (i + 1))) + '</div>' +
+          '<div class="caption" style="margin-top:6px;color:var(--text-2);line-height:1.65;">' + esc(s.body || '') + '</div>' +
+          (s.action ? '<div class="flex" style="margin-top:10px;justify-content:flex-end;">' +
+            '<button class="btn btn-ghost" style="padding:8px 16px;" data-act="' + esc(s.action) + '">采纳</button></div>' : '') +
+        '</div>'
+      ).join('');
+    box.scrollIntoView({ behavior: 'smooth' });
+  }
+  $('#diagnoseBtn').onclick = async () => {
+    let llmCfg = null;
+    try { llmCfg = JSON.parse(localStorage.getItem('llm:config') || 'null'); } catch (e) {}
+    if (!(llmCfg && llmCfg.api_key)) { toast('请先在「设置」页配置大模型（BYOK）'); return; }
+    const box = $('#diagnosis');
+    box.innerHTML = '<div class="card" style="border-left:4px solid var(--primary);background:var(--primary-soft);"><div class="flex gap8"><span style="color:var(--primary);">' + icon('refresh', 16) + '</span><span class="h2">AI 正在诊断行程…</span></div></div>';
+    try {
+      const r = await api('/api/v1/projects/' + pid + '/diagnose', { method: 'POST', body: { llm: llmCfg } });
+      renderDiagnosis(r.suggestions);
+    } catch (e) { box.innerHTML = ''; toast(e.message); }
+  };
+  $('#diagnosis').addEventListener('click', async e => {
+    const b = e.target.closest('[data-act]'); if (!b) return;
+    b.disabled = true; b.textContent = '处理中…';
+    try {
+      const r = await api('/api/v1/projects/' + pid + '/diagnose/apply', { method: 'POST', body: { action: b.dataset.act } });
+      toast(r.message || '已采纳');
+      b.textContent = '已采纳 ✓';
+      setTimeout(() => load(), 500);
+    } catch (err) { toast(err.message); b.disabled = false; b.textContent = '采纳'; }
+  });
+
+  renderNav('itinerary');
+  load();
+})();
+</script>
+{% endblock %}
